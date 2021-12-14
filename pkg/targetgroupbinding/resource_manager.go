@@ -4,14 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
+	"inet.af/netaddr"
+	"k8s.io/api/networking/v1beta1"
 	"time"
 
 	"k8s.io/client-go/tools/record"
 
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	ec2sdk "github.com/aws/aws-sdk-go/service/ec2"
 	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
@@ -59,6 +59,7 @@ func NewDefaultResourceManager(k8sClient client.Client, elbv2Client services.ELB
 		logger:            logger,
 		vpcID:             vpcID,
 		vpcInfoProvider:   vpcInfoProvider,
+		elbv2Client:       elbv2Client,
 
 		targetHealthRequeueDuration: defaultTargetHealthRequeueDuration,
 		enableEndpointSlices:        useEndpointSlices,
@@ -77,6 +78,7 @@ type defaultResourceManager struct {
 	logger            logr.Logger
 	vpcInfoProvider   networking.VPCInfoProvider
 	vpcID             string
+	elbv2Client       services.ELBV2
 
 	targetHealthRequeueDuration time.Duration
 	enableEndpointSlices        bool
@@ -89,7 +91,10 @@ func (m *defaultResourceManager) Reconcile(ctx context.Context, tgb *elbv2api.Ta
 	if *tgb.Spec.TargetType == elbv2api.TargetTypeIP {
 		return m.reconcileWithIPTargetType(ctx, tgb)
 	}
-	return m.reconcileWithInstanceTargetType(ctx, tgb)
+	if *tgb.Spec.TargetType == elbv2api.TargetTypeInstance {
+		return m.reconcileWithInstanceTargetType(ctx, tgb)
+	}
+	return m.reconcileWithALBTargetType(ctx, tgb)
 }
 
 func (m *defaultResourceManager) Cleanup(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
@@ -128,7 +133,7 @@ func (m *defaultResourceManager) reconcileWithIPTargetType(ctx context.Context, 
 	}
 
 	tgARN := tgb.Spec.TargetGroupARN
-	targets, err := m.targetsManager.ListTargets(ctx, tgARN)
+	targets, err := m.targetsManager.ListTargets(ctx, tgARN, *tgb.Spec.TargetType)
 	if err != nil {
 		return err
 	}
@@ -138,11 +143,15 @@ func (m *defaultResourceManager) reconcileWithIPTargetType(ctx context.Context, 
 	if err := m.networkingManager.ReconcileForPodEndpoints(ctx, tgb, endpoints); err != nil {
 		return err
 	}
-	if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
-		return err
+	if len(unmatchedTargets) > 0 {
+		if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
+			return err
+		}
 	}
-	if err := m.registerPodEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
-		return err
+	if len(unmatchedEndpoints) > 0 {
+		if err := m.registerPodEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
+			return err
+		}
 	}
 
 	anyPodNeedFurtherProbe, err := m.updateTargetHealthPodCondition(ctx, targetHealthCondType, matchedEndpointAndTargets, unmatchedEndpoints)
@@ -182,7 +191,7 @@ func (m *defaultResourceManager) reconcileWithInstanceTargetType(ctx context.Con
 		return err
 	}
 	tgARN := tgb.Spec.TargetGroupARN
-	targets, err := m.targetsManager.ListTargets(ctx, tgARN)
+	targets, err := m.targetsManager.ListTargets(ctx, tgARN, *tgb.Spec.TargetType)
 	if err != nil {
 		return err
 	}
@@ -192,25 +201,89 @@ func (m *defaultResourceManager) reconcileWithInstanceTargetType(ctx context.Con
 	if err := m.networkingManager.ReconcileForNodePortEndpoints(ctx, tgb, endpoints); err != nil {
 		return err
 	}
-	if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
-		return err
+	if len(unmatchedTargets) > 0 {
+		if err := m.deregisterTargets(ctx, tgARN, unmatchedTargets); err != nil {
+			return err
+		}
 	}
-	if err := m.registerNodePortEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
-		return err
+	if len(unmatchedEndpoints) > 0 {
+		if err := m.registerNodePortEndpoints(ctx, tgARN, unmatchedEndpoints); err != nil {
+			return err
+		}
 	}
 	_ = drainingTargets
 	return nil
 }
 
+func (m *defaultResourceManager) reconcileWithALBTargetType(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
+	tgARN := tgb.Spec.TargetGroupARN
+	targets, err := m.targetsManager.ListTargets(ctx, tgARN, *tgb.Spec.TargetType)
+	if err != nil {
+		return err
+	}
+	// Target groups with alb target type can only have one target load balancer
+	if len(targets) == 1 {
+		return nil
+	}
+	loadBalancerARN, err := m.buildTargetLoadBalancerArn(ctx, tgb)
+	if err != nil {
+		return err
+	}
+	return m.targetsManager.RegisterTargets(ctx, tgARN, []elbv2sdk.TargetDescription{
+		{
+			Id:   awssdk.String(loadBalancerARN),
+			Port: awssdk.Int64(int64(tgb.Spec.IngressRef.Port.IntVal)),
+		},
+	})
+}
+
+func (m *defaultResourceManager) buildTargetLoadBalancerArn(ctx context.Context, tgb *elbv2api.TargetGroupBinding) (string, error) {
+	ingressName := tgb.Spec.IngressRef.Name
+	ingressKey := types.NamespacedName{Namespace: tgb.Namespace, Name: ingressName}
+	ingress := &v1beta1.Ingress{}
+	err := m.k8sClient.Get(ctx, ingressKey, ingress)
+	if err != nil {
+		return "", err
+	}
+	var ingressHostname string
+	loadBalancerStatus := ingress.Status.LoadBalancer.Ingress
+	if len(loadBalancerStatus) > 0 {
+		ingressHostname = loadBalancerStatus[0].Hostname
+	}
+	if ingressHostname == "" {
+		return "", errors.New(fmt.Sprintf("ingress %s has not been assigned a hostname", ingressName))
+	}
+	loadBalancers, err := m.elbv2Client.DescribeLoadBalancersAsList(ctx, &elbv2sdk.DescribeLoadBalancersInput{})
+	if err != nil {
+		return "", err
+	}
+	var ingressLoadBalancer *elbv2sdk.LoadBalancer
+	for _, loadBalancer := range loadBalancers {
+		loadBalancerHostname := loadBalancer.DNSName
+		if *loadBalancerHostname == ingressHostname {
+			ingressLoadBalancer = loadBalancer
+			break
+		}
+	}
+	if ingressLoadBalancer == nil {
+		return "", errors.New(fmt.Sprintf("unable to find matching load balancer for ingress %s", ingressName))
+	}
+	return *ingressLoadBalancer.LoadBalancerArn, nil
+}
+
 func (m *defaultResourceManager) cleanupTargets(ctx context.Context, tgb *elbv2api.TargetGroupBinding) error {
-	targets, err := m.targetsManager.ListTargets(ctx, tgb.Spec.TargetGroupARN)
+	targets, err := m.targetsManager.ListTargets(ctx, tgb.Spec.TargetGroupARN, *tgb.Spec.TargetType)
 	if err != nil {
 		if isELBV2TargetGroupNotFoundError(err) {
 			return nil
 		}
 		return err
 	}
-	if err := m.deregisterTargets(ctx, tgb.Spec.TargetGroupARN, targets); err != nil {
+	// Per AWS docs, AvailabilityZone parameter is not supported if the target type is alb
+	if *tgb.Spec.TargetType == elbv2api.TargetTypeALB {
+		targets = stripAvailabilityZonesFromTargets(targets)
+	}
+	if err = m.deregisterTargets(ctx, tgb.Spec.TargetGroupARN, targets); err != nil {
 		if isELBV2TargetGroupNotFoundError(err) {
 			return nil
 		}
@@ -326,7 +399,14 @@ func (m *defaultResourceManager) deregisterTargets(ctx context.Context, tgARN st
 }
 
 func (m *defaultResourceManager) registerPodEndpoints(ctx context.Context, tgARN string, endpoints []backend.PodEndpoint) error {
-	vpc, err := m.vpcInfoProvider.FetchVPCInfo(ctx, m.vpcID)
+	vpcInfo, err := m.vpcInfoProvider.FetchVPCInfo(ctx, m.vpcID)
+	if err != nil {
+		return err
+	}
+	var vpcRawCIDRs []string
+	vpcRawCIDRs = append(vpcRawCIDRs, vpcInfo.AssociatedIPv4CIDRs()...)
+	vpcRawCIDRs = append(vpcRawCIDRs, vpcInfo.AssociatedIPv6CIDRs()...)
+	vpcCIDRs, err := networking.ParseCIDRs(vpcRawCIDRs)
 	if err != nil {
 		return err
 	}
@@ -337,7 +417,11 @@ func (m *defaultResourceManager) registerPodEndpoints(ctx context.Context, tgARN
 			Id:   awssdk.String(endpoint.IP),
 			Port: awssdk.Int64(endpoint.Port),
 		}
-		if !isELBV2TargetInELBVPC(endpoint.IP, vpc) {
+		podIP, err := netaddr.ParseIP(endpoint.IP)
+		if err != nil {
+			return err
+		}
+		if !networking.IsIPWithinCIDRs(podIP, vpcCIDRs) {
 			target.AvailabilityZone = awssdk.String("all")
 		}
 		sdkTargets = append(sdkTargets, target)
@@ -487,30 +571,4 @@ func isELBV2TargetGroupNotFoundError(err error) bool {
 		return awsErr.Code() == "TargetGroupNotFound"
 	}
 	return false
-}
-
-func isELBV2TargetInELBVPC(podIP string, vpc *ec2sdk.Vpc) bool {
-	// Check if the pod IP is found in a VPC CIDR block.
-	for _, v := range vpc.CidrBlockAssociationSet {
-		if isIPinCIDR(podIP, awssdk.StringValue(v.CidrBlock)) {
-			return true
-		}
-	}
-
-	// Cannot find pod IP in a VPC CIDR block.
-	return false
-}
-
-func isIPinCIDR(ipAddr, cidrBlock string) bool {
-	_, cidr, err := net.ParseCIDR(cidrBlock)
-	if err != nil {
-		return false
-	}
-
-	ip := net.ParseIP(ipAddr)
-	if ip == nil {
-		return false
-	}
-
-	return cidr.Contains(ip)
 }

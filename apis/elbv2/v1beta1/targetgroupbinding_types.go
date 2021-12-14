@@ -21,16 +21,18 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// +kubebuilder:validation:Enum=instance;ip
+// +kubebuilder:validation:Enum=instance;ip;alb
 // TargetType is the targetType of your ELBV2 TargetGroup.
 //
 // * with `instance` TargetType, nodes with nodePort for your service will be registered as targets
 // * with `ip` TargetType, Pods with containerPort for your service will be registered as targets
+// * with `alb` TargetType, an application load balancer will be registered as the target
 type TargetType string
 
 const (
 	TargetTypeInstance TargetType = "instance"
 	TargetTypeIP       TargetType = "ip"
+	TargetTypeALB      TargetType = "alb"
 )
 
 // +kubebuilder:validation:Enum=ipv4;ipv6
@@ -43,11 +45,22 @@ const (
 )
 
 // ServiceReference defines reference to a Kubernetes Service and its ServicePort.
+// This is only applicable for `instance` and `ip` target types.
 type ServiceReference struct {
 	// Name is the name of the Service.
 	Name string `json:"name"`
 
 	// Port is the port of the ServicePort.
+	Port intstr.IntOrString `json:"port"`
+}
+
+// IngressReference defines reference to a Kubernetes Ingress and a port that it forwards traffic to.
+// This is only applicable for the `alb` target type.
+type IngressReference struct {
+	// Name is the name of the Ingress.
+	Name string `json:"name"`
+
+	// Port is one of the ports listed in the Ingress spec.
 	Port intstr.IntOrString `json:"port"`
 }
 
@@ -132,7 +145,14 @@ type TargetGroupBindingSpec struct {
 	TargetType *TargetType `json:"targetType,omitempty"`
 
 	// serviceRef is a reference to a Kubernetes Service and ServicePort.
+	// This is only applicable for `instance` and `ip` target types.
+	// +optional
 	ServiceRef ServiceReference `json:"serviceRef"`
+
+	// ingressRef is a reference to a Kubernetes Ingress and a port listed in the Ingress spec.
+	// This is only applicable for the `alb` target type.
+	// +optional
+	IngressRef IngressReference `json:"ingressRef"`
 
 	// networking defines the networking rules to allow ELBV2 LoadBalancer to access targets in TargetGroup.
 	// +optional
