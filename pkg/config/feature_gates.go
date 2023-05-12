@@ -2,16 +2,23 @@ package config
 
 import (
 	"fmt"
-	"github.com/spf13/pflag"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/pflag"
 )
 
 type Feature string
 
 const (
-	ListenerRulesTagging Feature = "ListenerRulesTagging"
-	WeightedTargetGroups Feature = "WeightedTargetGroups"
+	ListenerRulesTagging         Feature = "ListenerRulesTagging"
+	WeightedTargetGroups         Feature = "WeightedTargetGroups"
+	ServiceTypeLoadBalancerOnly  Feature = "ServiceTypeLoadBalancerOnly"
+	EndpointsFailOpen            Feature = "EndpointsFailOpen"
+	EnableServiceController      Feature = "EnableServiceController"
+	EnableIPTargetType           Feature = "EnableIPTargetType"
+	SubnetsClusterTagCheck       Feature = "SubnetsClusterTagCheck"
+	NLBHealthCheckAdvancedConfig Feature = "NLBHealthCheckAdvancedConfig"
 )
 
 type FeatureGates interface {
@@ -39,8 +46,14 @@ type defaultFeatureGates struct {
 func NewFeatureGates() FeatureGates {
 	return &defaultFeatureGates{
 		featureState: map[Feature]bool{
-			ListenerRulesTagging: true,
-			WeightedTargetGroups: true,
+			ListenerRulesTagging:         true,
+			WeightedTargetGroups:         true,
+			ServiceTypeLoadBalancerOnly:  false,
+			EndpointsFailOpen:            true,
+			EnableServiceController:      true,
+			EnableIPTargetType:           true,
+			SubnetsClusterTagCheck:       true,
+			NLBHealthCheckAdvancedConfig: true,
 		},
 	}
 }

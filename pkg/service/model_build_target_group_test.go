@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	elbv2api "sigs.k8s.io/aws-load-balancer-controller/apis/elbv2/v1beta1"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/config"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 )
 
@@ -183,6 +184,7 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				Port:                    &trafficPort,
 				Protocol:                (*elbv2.Protocol)(aws.String(string(elbv2.ProtocolTCP))),
 				IntervalSeconds:         aws.Int64(10),
+				TimeoutSeconds:          aws.Int64(10),
 				HealthyThresholdCount:   aws.Int64(3),
 				UnhealthyThresholdCount: aws.Int64(3),
 			},
@@ -200,6 +202,7 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 						"service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout":             "30",
 						"service.beta.kubernetes.io/aws-load-balancer-healthcheck-healthy-threshold":   "2",
 						"service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold": "2",
+						"service.beta.kubernetes.io/aws-load-balancer-healthcheck-success-codes":       "200-220,231,250-300,301,302",
 					},
 				},
 			},
@@ -209,13 +212,17 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				Protocol:                (*elbv2.Protocol)(aws.String("HTTP")),
 				Path:                    aws.String("/healthz"),
 				IntervalSeconds:         aws.Int64(10),
+				TimeoutSeconds:          aws.Int64(30),
 				HealthyThresholdCount:   aws.Int64(2),
 				UnhealthyThresholdCount: aws.Int64(2),
+				Matcher: &elbv2.HealthCheckMatcher{
+					HTTPCode: aws.String("200-220,231,250-300,301,302"),
+				},
 			},
 			targetType: elbv2.TargetTypeInstance,
 		},
 		{
-			testName: "default path",
+			testName: "default path and matcher code",
 			svc: &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
@@ -229,8 +236,12 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				Protocol:                (*elbv2.Protocol)(aws.String("HTTP")),
 				Path:                    aws.String("/"),
 				IntervalSeconds:         aws.Int64(10),
+				TimeoutSeconds:          aws.Int64(10),
 				HealthyThresholdCount:   aws.Int64(3),
 				UnhealthyThresholdCount: aws.Int64(3),
+				Matcher: &elbv2.HealthCheckMatcher{
+					HTTPCode: aws.String("200-399"),
+				},
 			},
 			targetType: elbv2.TargetTypeIP,
 		},
@@ -284,6 +295,7 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				Port:                    &trafficPort,
 				Protocol:                (*elbv2.Protocol)(aws.String(string(elbv2.ProtocolTCP))),
 				IntervalSeconds:         aws.Int64(10),
+				TimeoutSeconds:          aws.Int64(10),
 				HealthyThresholdCount:   aws.Int64(3),
 				UnhealthyThresholdCount: aws.Int64(3),
 			},
@@ -304,8 +316,12 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				Protocol:                (*elbv2.Protocol)(aws.String(string(elbv2.ProtocolHTTP))),
 				Path:                    aws.String("/healthz"),
 				IntervalSeconds:         aws.Int64(10),
+				TimeoutSeconds:          aws.Int64(6),
 				HealthyThresholdCount:   aws.Int64(2),
 				UnhealthyThresholdCount: aws.Int64(2),
+				Matcher: &elbv2.HealthCheckMatcher{
+					HTTPCode: aws.String("200-399"),
+				},
 			},
 			targetType: elbv2.TargetTypeInstance,
 		},
@@ -333,6 +349,7 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				Port:                    &port8888,
 				Protocol:                (*elbv2.Protocol)(aws.String(string(elbv2.ProtocolTCP))),
 				IntervalSeconds:         aws.Int64(10),
+				TimeoutSeconds:          aws.Int64(30),
 				HealthyThresholdCount:   aws.Int64(5),
 				UnhealthyThresholdCount: aws.Int64(5),
 			},
@@ -345,6 +362,7 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 			builder := &defaultModelBuildTask{
 				service:                              tt.svc,
 				annotationParser:                     parser,
+				featureGates:                         config.NewFeatureGates(),
 				defaultAccessLogsS3Bucket:            "",
 				defaultAccessLogsS3Prefix:            "",
 				defaultLoadBalancingCrossZoneEnabled: false,
@@ -356,6 +374,7 @@ func Test_defaultModelBuilderTask_buildTargetHealthCheck(t *testing.T) {
 				defaultHealthCheckTimeout:            10,
 				defaultHealthCheckHealthyThreshold:   3,
 				defaultHealthCheckUnhealthyThreshold: 3,
+				defaultHealthCheckMatcherHTTPCode:    "200-399",
 
 				defaultHealthCheckProtocolForInstanceModeLocal:           elbv2.ProtocolHTTP,
 				defaultHealthCheckPortForInstanceModeLocal:               strconv.FormatInt(int64(int(tt.svc.Spec.HealthCheckNodePort)), 10),
@@ -1031,6 +1050,25 @@ func Test_defaultModelBuilderTask_buildTargetGroupBindingNetworking(t *testing.T
 				},
 			},
 		},
+		{
+			name: "with manage backend SG disabled via annotation",
+			svc: &corev1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						"service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules": "false",
+					},
+				},
+			},
+			tgPort: port80,
+			hcPort: port808,
+			subnets: []*ec2.Subnet{{
+				CidrBlock: aws.String("172.16.0.0/19"),
+				SubnetId:  aws.String("az-1"),
+			}},
+			tgProtocol:    corev1.ProtocolTCP,
+			ipAddressType: elbv2.TargetGroupIPAddressTypeIPv4,
+			want:          nil,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1039,7 +1077,7 @@ func Test_defaultModelBuilderTask_buildTargetGroupBindingNetworking(t *testing.T
 			port := corev1.ServicePort{
 				Protocol: tt.tgProtocol,
 			}
-			got := builder.buildTargetGroupBindingNetworking(context.Background(), tt.tgPort, tt.preserveClientIP, tt.hcPort, port, tt.defaultSourceRanges, tt.ipAddressType)
+			got, _ := builder.buildTargetGroupBindingNetworking(context.Background(), tt.tgPort, tt.preserveClientIP, tt.hcPort, port, tt.defaultSourceRanges, tt.ipAddressType)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -1142,15 +1180,45 @@ func Test_defaultModelBuilder_buildPreserveClientIPFlag(t *testing.T) {
 func Test_defaultModelBuilder_buildTargetType(t *testing.T) {
 
 	tests := []struct {
-		testName string
-		svc      *corev1.Service
-		want     elbv2.TargetType
-		wantErr  error
+		testName           string
+		svc                *corev1.Service
+		defaultTargetType  string
+		want               elbv2.TargetType
+		enableIPTargetType *bool
+		wantErr            error
 	}{
 		{
 			testName: "empty annotation",
-			svc:      &corev1.Service{},
-			wantErr:  errors.New("unsupported target type \"\" for load balancer type \"\""),
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+				},
+			},
+			want: elbv2.TargetTypeInstance,
+		},
+		{
+			testName: "default type ip",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+				},
+			},
+			defaultTargetType: "ip",
+			want:              elbv2.TargetTypeIP,
 		},
 		{
 			testName: "lb type nlb-ip",
@@ -1158,6 +1226,16 @@ func Test_defaultModelBuilder_buildTargetType(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"service.beta.kubernetes.io/aws-load-balancer-type": "nlb-ip",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
 					},
 				},
 			},
@@ -1172,6 +1250,16 @@ func Test_defaultModelBuilder_buildTargetType(t *testing.T) {
 						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "instance",
 					},
 				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+				},
 			},
 			want: elbv2.TargetTypeInstance,
 		},
@@ -1184,31 +1272,41 @@ func Test_defaultModelBuilder_buildTargetType(t *testing.T) {
 						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip",
 					},
 				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+				},
 			},
 			want: elbv2.TargetTypeIP,
 		},
 		{
-			testName: "external, no target type",
-			svc: &corev1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						"service.beta.kubernetes.io/aws-load-balancer-type": "external",
-					},
-				},
-			},
-			wantErr: errors.New("unsupported target type \"\" for load balancer type \"external\""),
-		},
-		{
-			testName: "external, some other target type",
+			testName: "enableIPTargetType is false, target ip",
 			svc: &corev1.Service{
 				ObjectMeta: metav1.ObjectMeta{
 					Annotations: map[string]string{
 						"service.beta.kubernetes.io/aws-load-balancer-type":            "external",
-						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "unknown",
+						"service.beta.kubernetes.io/aws-load-balancer-nlb-target-type": "ip",
+					},
+				},
+				Spec: corev1.ServiceSpec{
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
 					},
 				},
 			},
-			wantErr: errors.New("unsupported target type \"unknown\" for load balancer type \"external\""),
+			enableIPTargetType: aws.Bool(false),
+			wantErr:            errors.New("unsupported targetType: ip when EnableIPTargetType is false"),
 		},
 		{
 			testName: "external, ClusterIP with target type instance",
@@ -1221,19 +1319,94 @@ func Test_defaultModelBuilder_buildTargetType(t *testing.T) {
 				},
 				Spec: corev1.ServiceSpec{
 					Type: corev1.ServiceTypeClusterIP,
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
 				},
 			},
 			wantErr: errors.New("unsupported service type \"ClusterIP\" for load balancer target type \"instance\""),
+		},
+		{
+			testName: "load balancer class, default target type",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: aws.String("service.k8s.aws/nlb"),
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+							NodePort:   31223,
+						},
+					},
+				},
+			},
+			want: elbv2.TargetTypeInstance,
+		},
+		{
+			testName: "allocate load balancer node ports false",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: aws.String("service.k8s.aws/nlb"),
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+							NodePort:   31223,
+						},
+					},
+					AllocateLoadBalancerNodePorts: aws.Bool(false),
+				},
+			},
+			want: elbv2.TargetTypeInstance,
+		},
+		{
+			testName: "allocate load balancer node ports false, node port unspecified",
+			svc: &corev1.Service{
+				Spec: corev1.ServiceSpec{
+					Type:              corev1.ServiceTypeLoadBalancer,
+					LoadBalancerClass: aws.String("service.k8s.aws/nlb"),
+					Ports: []corev1.ServicePort{
+						{
+							Name:       "http",
+							Port:       80,
+							TargetPort: intstr.FromInt(80),
+							Protocol:   corev1.ProtocolTCP,
+						},
+					},
+					AllocateLoadBalancerNodePorts: aws.Bool(false),
+				},
+			},
+			wantErr: errors.New("unable to support instance target type with an unallocated NodePort"),
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.testName, func(t *testing.T) {
 			parser := annotations.NewSuffixAnnotationParser("service.beta.kubernetes.io")
 			builder := &defaultModelBuildTask{
-				annotationParser: parser,
-				service:          tt.svc,
+				annotationParser:  parser,
+				service:           tt.svc,
+				defaultTargetType: elbv2.TargetType(tt.defaultTargetType),
 			}
-			got, err := builder.buildTargetType(context.Background())
+			if tt.defaultTargetType == "" {
+				builder.defaultTargetType = elbv2.TargetTypeInstance
+			}
+			if tt.enableIPTargetType == nil {
+				builder.enableIPTargetType = true
+			} else {
+				builder.enableIPTargetType = *tt.enableIPTargetType
+			}
+			got, err := builder.buildTargetType(context.Background(), tt.svc.Spec.Ports[0])
 			if tt.wantErr != nil {
 				assert.EqualError(t, err, tt.wantErr.Error())
 			} else {

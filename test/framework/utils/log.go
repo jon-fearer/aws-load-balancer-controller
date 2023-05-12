@@ -2,42 +2,42 @@ package utils
 
 import (
 	"fmt"
-	"github.com/gavv/httpexpect/v2"
+
+	httpexpectv2 "github.com/gavv/httpexpect/v2"
 	"github.com/go-logr/logr"
-	"github.com/onsi/ginkgo"
+	ginkgov2 "github.com/onsi/ginkgo/v2"
 	zapraw "go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 type GinkgoLogger interface {
-	logr.Logger
-	httpexpect.LoggerReporter
+	httpexpectv2.LoggerReporter
 }
 
 var _ GinkgoLogger = &defaultGinkgoLogger{}
 
 type defaultGinkgoLogger struct {
-	logr.Logger
+	logger logr.Logger
 }
 
 func (l *defaultGinkgoLogger) Logf(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
-	l.Logger.Info(message)
+	l.logger.Info(message)
 }
 
 func (l *defaultGinkgoLogger) Errorf(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
-	ginkgo.Fail(message)
+	ginkgov2.Fail(message)
 }
 
 // NewGinkgoLogger returns new logger with ginkgo backend.
-func NewGinkgoLogger() GinkgoLogger {
+func NewGinkgoLogger() (logr.Logger, httpexpectv2.LoggerReporter) {
 	encoder := zapcore.NewJSONEncoder(zapraw.NewProductionEncoderConfig())
 
 	logger := zap.New(zap.UseDevMode(false),
 		zap.Level(zapraw.InfoLevel),
-		zap.WriteTo(ginkgo.GinkgoWriter),
+		zap.WriteTo(ginkgov2.GinkgoWriter),
 		zap.Encoder(encoder))
-	return &defaultGinkgoLogger{Logger: logger}
+	return logger, &defaultGinkgoLogger{logger: logger}
 }

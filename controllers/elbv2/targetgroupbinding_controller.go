@@ -24,7 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	discv1 "k8s.io/api/discovery/v1beta1"
+	discv1 "k8s.io/api/discovery/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/aws-load-balancer-controller/controllers/elbv2/eventhandlers"
@@ -84,7 +84,6 @@ type targetGroupBindingReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods/status,verbs=update;patch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=endpoints,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="discovery.k8s.io",resources=endpointslices,verbs=get;list;watch

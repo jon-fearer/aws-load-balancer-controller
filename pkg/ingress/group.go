@@ -3,7 +3,7 @@ package ingress
 import (
 	"fmt"
 
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -13,8 +13,8 @@ type GroupID types.NamespacedName
 
 // IsExplicit tests whether this is an explicit group.
 // Explicit groups are defined by either:
-//	* annotation on Ingress: `group.name`
-//  * field on associated IngressClassParams: `group.name`
+//   - annotation on Ingress: `group.name`
+//   - field on associated IngressClassParams: `group.name`
 func (groupID GroupID) IsExplicit() bool {
 	return groupID.Namespace == ""
 }

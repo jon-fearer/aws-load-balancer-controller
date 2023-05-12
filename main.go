@@ -91,7 +91,7 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
-	config.ConfigureWebhookServerCert(controllerCFG.RuntimeConfig, mgr)
+	config.ConfigureWebhookServer(controllerCFG.RuntimeConfig, mgr)
 	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "unable to obtain clientSet")
@@ -106,12 +106,15 @@ func main() {
 	vpcInfoProvider := networking.NewDefaultVPCInfoProvider(cloud.EC2(), ctrl.Log.WithName("vpc-info-provider"))
 	subnetResolver := networking.NewDefaultSubnetsResolver(azInfoProvider, cloud.EC2(), cloud.VpcID(), controllerCFG.ClusterName, ctrl.Log.WithName("subnets-resolver"))
 	tgbResManager := targetgroupbinding.NewDefaultResourceManager(mgr.GetClient(), cloud.ELBV2(), cloud.EC2(),
-		podInfoRepo, sgManager, sgReconciler, cloud.VpcID(), controllerCFG.ClusterName, mgr.GetEventRecorderFor("targetGroupBinding"), ctrl.Log, controllerCFG.EnableEndpointSlices, controllerCFG.DisableRestrictedSGRules, vpcInfoProvider)
+		podInfoRepo, sgManager, sgReconciler, vpcInfoProvider,
+		cloud.VpcID(), controllerCFG.ClusterName, controllerCFG.FeatureGates.Enabled(config.EndpointsFailOpen), controllerCFG.EnableEndpointSlices, controllerCFG.DisableRestrictedSGRules,
+		mgr.GetEventRecorderFor("targetGroupBinding"), ctrl.Log)
 	backendSGProvider := networking.NewBackendSGProvider(controllerCFG.ClusterName, controllerCFG.BackendSecurityGroup,
-		cloud.VpcID(), cloud.EC2(), mgr.GetClient(), ctrl.Log.WithName("backend-sg-provider"))
+		cloud.VpcID(), cloud.EC2(), mgr.GetClient(), controllerCFG.DefaultTags, ctrl.Log.WithName("backend-sg-provider"))
+	sgResolver := networking.NewDefaultSecurityGroupResolver(cloud.EC2(), cloud.VpcID())
 	ingGroupReconciler := ingress.NewGroupReconciler(cloud, mgr.GetClient(), mgr.GetEventRecorderFor("ingress"),
 		finalizerManager, sgManager, sgReconciler, subnetResolver,
-		controllerCFG, backendSGProvider, ctrl.Log.WithName("controllers").WithName("ingress"))
+		controllerCFG, backendSGProvider, sgResolver, ctrl.Log.WithName("controllers").WithName("ingress"))
 	svcReconciler := service.NewServiceReconciler(cloud, mgr.GetClient(), mgr.GetEventRecorderFor("service"),
 		finalizerManager, sgManager, sgReconciler, subnetResolver, vpcInfoProvider,
 		controllerCFG, ctrl.Log.WithName("controllers").WithName("service"))
@@ -124,10 +127,15 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Ingress")
 		os.Exit(1)
 	}
-	if err = svcReconciler.SetupWithManager(ctx, mgr); err != nil {
-		setupLog.Error(err, "Unable to create controller", "controller", "Service")
-		os.Exit(1)
+
+	// Setup service reconciler only if AllowServiceType is set to true.
+	if controllerCFG.FeatureGates.Enabled(config.EnableServiceController) {
+		if err = svcReconciler.SetupWithManager(ctx, mgr); err != nil {
+			setupLog.Error(err, "Unable to create controller", "controller", "Service")
+			os.Exit(1)
+		}
 	}
+
 	if err := tgbReconciler.SetupWithManager(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "TargetGroupBinding")
 		os.Exit(1)
@@ -144,6 +152,8 @@ func main() {
 	podReadinessGateInjector := inject.NewPodReadinessGate(controllerCFG.PodWebhookConfig,
 		mgr.GetClient(), ctrl.Log.WithName("pod-readiness-gate-injector"))
 	corewebhook.NewPodMutator(podReadinessGateInjector).SetupWithManager(mgr)
+	corewebhook.NewServiceMutator(controllerCFG.ServiceConfig.LoadBalancerClass, ctrl.Log).SetupWithManager(mgr)
+	elbv2webhook.NewIngressClassParamsValidator().SetupWithManager(mgr)
 	elbv2webhook.NewTargetGroupBindingMutator(cloud.ELBV2(), ctrl.Log).SetupWithManager(mgr)
 	elbv2webhook.NewTargetGroupBindingValidator(mgr.GetClient(), cloud.ELBV2(), ctrl.Log).SetupWithManager(mgr)
 	networkingwebhook.NewIngressValidator(mgr.GetClient(), controllerCFG.IngressConfig, ctrl.Log).SetupWithManager(mgr)

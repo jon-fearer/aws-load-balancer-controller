@@ -17,7 +17,7 @@
 |--------------------------------------------------------------------------------------------------|-------------------------|---------------------------|--------------------------------------------------------|
 | [service.beta.kubernetes.io/load-balancer-source-ranges](#lb-source-ranges)                      | stringList              |                           |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-type](#lb-type)                                    | string                  |                           |                                                        |
-| [service.beta.kubernetes.io/aws-load-balancer-nlb-target-type](#nlb-target-type)                 | string                  |                           |                                                        |
+| [service.beta.kubernetes.io/aws-load-balancer-nlb-target-type](#nlb-target-type)                 | string                  |                           | default `instance` in case of LoadBalancerClass        |
 | [service.beta.kubernetes.io/aws-load-balancer-name](#load-balancer-name)                         | string                  |                           |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-internal](#lb-internal)                            | boolean                 | false                     | deprecated, in favor of [aws-load-balancer-scheme](#lb-scheme)|
 | [service.beta.kubernetes.io/aws-load-balancer-scheme](#lb-scheme)                                | string                  | internal                  |                                                        |
@@ -39,13 +39,16 @@
 | [service.beta.kubernetes.io/aws-load-balancer-healthcheck-unhealthy-threshold](#healthcheck-unhealthy-threshold) | integer | 3                         |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout](#healthcheck-timeout)         | integer                 | 10                        |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval](#healthcheck-interval)       | integer                 | 10                        |                                                        |
+| [service.beta.kubernetes.io/aws-load-balancer-healthcheck-success-codes](#healthcheck-success-codes)       | string        | 200-399                   |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-eip-allocations](#eip-allocations)                 | stringList              |                           | internet-facing lb only. Length must match the number of subnets|
 | [service.beta.kubernetes.io/aws-load-balancer-private-ipv4-addresses](#private-ipv4-addresses)   | stringList              |                           | internal lb only. Length must match the number of subnets |
+| [service.beta.kubernetes.io/aws-load-balancer-ipv6-addresses](#ipv6-addresses)                   | stringList              |                           | dualstack lb only. Length must match the number of subnets |
 | [service.beta.kubernetes.io/aws-load-balancer-target-group-attributes](#target-group-attributes) | stringMap               |                           |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-subnets](#subnets)                                 | stringList              |                           |                                                        |
-| [service.beta.kubernetes.io/aws-load-balancer-alpn-policy](#alpn-policy)                         | stringList              |                           |                                                        |
+| [service.beta.kubernetes.io/aws-load-balancer-alpn-policy](#alpn-policy)                         | string                  |                           |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-target-node-labels](#target-node-labels)           | stringMap               |                           |                                                        |
 | [service.beta.kubernetes.io/aws-load-balancer-attributes](#load-balancer-attributes)             | stringMap               |                           |                                                        |
+| [service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules](#manage-backend-sg-rules)  | boolean    | true                      |                                                        |
 
 ## Traffic Routing
 Traffic Routing can be controlled with following annotations:
@@ -62,9 +65,12 @@ Traffic Routing can be controlled with following annotations:
 
 - <a name="lb-type">`service.beta.kubernetes.io/aws-load-balancer-type`</a> specifies the load balancer type. This controller reconciles those service resources with this annotation set to either `nlb-ip` or `external`.
 
+    !!!tip
+        This annotation specifies the controller used to provision LoadBalancers (as specified in [legacy-cloud-provider](#legacy-cloud-provider)). Refer to [lb-scheme](#lb-scheme) to specify whether the LoadBalancer is internet-facing or internal.
+    
     !!!note ""
-        - For `nlb-ip` type, controller will provision NLB with IP targets. This value is supported for backwards compatibility
-        - For `external` type, NLB target type depend on the annotation [nlb-target-type](#nlb-target-type)
+        - [Deprecated] For type `nlb-ip`, the controller will provision an NLB with targets registered by IP address. This value is supported for backwards compatibility.
+        - For type `external`, the NLB target type depends on the [nlb-target-type](#nlb-target-type) annotation.
 
     !!!warning "limitations"
         - This annotation should not be modified after service creation.
@@ -76,15 +82,23 @@ Traffic Routing can be controlled with following annotations:
 
 - <a name="nlb-target-type">`service.beta.kubernetes.io/aws-load-balancer-nlb-target-type`</a> specifies the target type to configure for NLB. You can choose between
 `instance` and `ip`.
-    - `instance` mode will route traffic to all EC2 instances within cluster on the [NodePort](https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport) opened for your service.
+    - `instance` mode will route traffic to all EC2 instances within cluster on the [NodePort](https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport) opened for your service. The kube-proxy on the individual worker nodes sets up the forwarding of the traffic from the NodePort to the pods behind the service.
 
         !!!note ""
-            service must be of type `NodePort` or `LoadBalancer` for `instance` targets
+            - service must be of type `NodePort` or `LoadBalancer` for `instance` targets
+            - for k8s 1.22 and later if `spec.allocateLoadBalancerNodePorts` is set to `false`, `NodePort` must be allocated manually
 
-    - `ip` mode will route traffic directly to the pod IP.
+        !!!note "default value"
+            If you configure `spec.loadBalancerClass`, the controller defaults to `instance` target type
+
+        !!!warning "NodePort allocation"
+            k8s version 1.22 and later support disabling NodePort allocation by setting the service field `spec.allocateLoadBalancerNodePorts` to `false`. If the NodePort is not allocated for a service port, the controller will fail to reconcile instance mode NLB.
+
+      - `ip` mode will route traffic directly to the pod IP. In this mode, AWS NLB sends traffic directly to the Kubernetes pods behind the service, eliminating the need for an extra network hop through the worker nodes in the Kubernetes cluster.
 
         !!!note ""
-            network plugin must use native AWS VPC networking configuration for pod IP, for example [Amazon VPC CNI plugin](https://github.com/aws/amazon-vpc-cni-k8s).
+            - `ip` target mode supports pods running on AWS EC2 instances and AWS Fargate
+            - network plugin must use native AWS VPC networking configuration for pod IP, for example [Amazon VPC CNI plugin](https://github.com/aws/amazon-vpc-cni-k8s).
 
     !!!example
         ```
@@ -134,7 +148,7 @@ on the load balancer.
 - <a name="eip-allocations">`service.beta.kubernetes.io/aws-load-balancer-eip-allocations`</a> specifies a list of [elastic IP address](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/elastic-ip-addresses-eip.html) configuration for an internet-facing NLB.
 
     !!!note
-        - This configuration is optional and use can use it to assign static IP addresses to your NLB
+        - This configuration is optional, and you can use it to assign static IP addresses to your NLB
         - You must specify the same number of eip allocations as load balancer subnets [annotation](#subnets)
         - NLB must be internet-facing
 
@@ -148,13 +162,26 @@ on the load balancer.
 
     !!!note
         - NLB must be internal
-        - This configuration is optional and use can use it to assign static IP addresses to your NLB
+        - This configuration is optional, and you can use it to assign static IPv4 addresses to your NLB
         - You must specify the same number of private IPv4 addresses as load balancer subnets [annotation](#subnets)
         - You must specify the IPv4 addresses from the load balancer subnet IPv4 ranges
 
     !!!example
         ```
         service.beta.kubernetes.io/aws-load-balancer-private-ipv4-addresses: 192.168.10.15, 192.168.32.16
+        ```
+
+- <a name="ipv6-addresses">`service.beta.kubernetes.io/aws-load-balancer-ipv6-addresses`</a> specifies a list of IPv6 addresses for an dualstack NLB.
+
+    !!!note
+        - NLB must be dualstack
+        - This configuration is optional, and you can use it to assign static IPv6 addresses to your NLB
+        - You must specify the same number of private IPv6 addresses as load balancer subnets [annotation](#subnets)
+        - You must specify the IPv6 addresses from the load balancer subnet IPv6 ranges
+
+    !!!example
+        ```
+        service.beta.kubernetes.io/aws-load-balancer-ipv6-addresses: 2600:1f13:837:8501::1, 2600:1f13:837:8504::1
         ```
 
 ## Traffic Listening
@@ -210,7 +237,7 @@ for proxy protocol v2 configuration.
         Custom attributes set in this annotation's config map will be overriden by annotation-specific attributes. For backwards compatibility, existing annotations for the individual load balancer attributes get precedence in case of ties.
   
     !!!note ""
-        - If `deletion_protection.enable=true` is in the annotation, the controller will not be able to delete the NLB during reconciliation. Once the attribute gets edited to `deletion_protection.enable=false` during reconciliation, the deployer will force delete the resource.
+        - If `deletion_protection.enabled=true` is in the annotation, the controller will not be able to delete the NLB during reconciliation. Once the attribute gets edited to `deletion_protection.enabled=false` during reconciliation, the deployer will force delete the resource.
         - Please note, if the deletion protection is not enabled via annotation (e.g. via AWS console), the controller still deletes the underlying resource.
     
     !!!example
@@ -274,8 +301,8 @@ Health check on target groups can be configured with following annotations:
 
 - <a name="healthcheck-port">`service.beta.kubernetes.io/aws-load-balancer-healthcheck-port`</a> specifies the TCP port to use for target group health check.
 
-    !!!note ""
-        - if you do not specify the health check port, controller uses `traffic-port` as default value
+    !!!note "default value"
+        - if you do not specify the health check port, the default value will be `spec.healthCheckNodePort` when `externalTrafficPolicy=local` or `traffic-port` otherwise.
 
     !!!example
         - set the health check port to `traffic-port`
@@ -315,6 +342,12 @@ Health check on target groups can be configured with following annotations:
         service.beta.kubernetes.io/aws-load-balancer-healthcheck-interval: "10"
         ```
 
+- <a name="healthcheck-success-codes">`service.beta.kubernetes.io/aws-load-balancer-healthcheck-success-codes`</a> specifies the http success codes for the health check in case of http/https protocol.
+
+    !!!example
+        ```
+        service.beta.kubernetes.io/aws-load-balancer-healthcheck-success-codes: "200-399"
+        ```
 
 - <a name="healthcheck-timeout">`service.beta.kubernetes.io/aws-load-balancer-healthcheck-timeout`</a> specifies the target group health check timeout. The target has to respond within the timeout for a successful health check.
 
@@ -389,6 +422,10 @@ Load balancer access can be controlled via following annotations:
         This annotation will be ignored in case preserve client IP is not enabled.
         - preserve client IP is disabled by default for `IP` targets
         - preserve client IP is enabled by default for `instance` targets
+    
+    !!!warning ""
+        Preserve client IP has no effect on traffic converted from IPv4 to IPv6 and on traffic converted from IPv6 to IPv4. The source IP of this type of traffic is always the private IP address of the Network Load Balancer.
+        - This could cause the clients that have their traffic converted to bypass the specified CIDRs that are allowed to access the NLB.
 
     !!!example
         ```
@@ -410,6 +447,16 @@ Load balancer access can be controlled via following annotations:
     !!!example
         ```
         service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+        ```
+
+- <a name="manage-backend-sg-rules">`service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules`</a> specifies whether the controller should automatically add the ingress rules to the instance/ENI security group.
+
+    !!!warning ""
+        If you disable the automatic management of security group rules for an NLB, you will need to manually add appropriate ingress rules to your EC2 instance or ENI security groups to allow access to the traffic and health check ports.
+
+    !!!example
+        ```
+        service.beta.kubernetes.io/aws-load-balancer-manage-backend-security-group-rules: "false"
         ```
 
 ## Legacy Cloud Provider

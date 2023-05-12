@@ -3,7 +3,7 @@ package eventhandlers
 import (
 	"context"
 	"github.com/go-logr/logr"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -63,7 +63,6 @@ func (h *enqueueRequestsForIngressClassParamsEvent) Generic(e event.GenericEvent
 	// we don't have any generic event for secrets.
 }
 
-//
 func (h *enqueueRequestsForIngressClassParamsEvent) enqueueImpactedIngressClasses(ingClassParams *elbv2api.IngressClassParams) {
 	ingClassList := &networking.IngressClassList{}
 	if err := h.k8sClient.List(context.Background(), ingClassList,

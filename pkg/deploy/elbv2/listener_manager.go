@@ -2,6 +2,8 @@ package elbv2
 
 import (
 	"context"
+	"time"
+
 	awssdk "github.com/aws/aws-sdk-go/aws"
 	elbv2sdk "github.com/aws/aws-sdk-go/service/elbv2"
 	"github.com/go-logr/logr"
@@ -15,7 +17,6 @@ import (
 	elbv2equality "sigs.k8s.io/aws-load-balancer-controller/pkg/equality/elbv2"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/runtime"
-	"time"
 )
 
 // ListenerManager is responsible for create/update/delete Listener resources.
@@ -158,7 +159,7 @@ func (m *defaultListenerManager) updateSDKListenerWithExtraCertificates(ctx cont
 	sdkLS ListenerWithTags, isNewSDKListener bool) error {
 	// if TLS is not supported, we shouldn't update
 	if sdkLS.Listener.SslPolicy == nil {
-		m.logger.V(1).Info("SDK Listner doesn't have SSL Policy set, we skip updating extra certs for non-TLS listener.")
+		m.logger.V(1).Info("SDK Listener doesn't have SSL Policy set, we skip updating extra certs for non-TLS listener.")
 		return nil
 	}
 
@@ -174,30 +175,6 @@ func (m *defaultListenerManager) updateSDKListenerWithExtraCertificates(ctx cont
 			return err
 		}
 		currentExtraCertARNs.Insert(certARNs...)
-	}
-
-	for _, certARN := range desiredExtraCertARNs.Difference(currentExtraCertARNs).List() {
-		req := &elbv2sdk.AddListenerCertificatesInput{
-			ListenerArn: sdkLS.Listener.ListenerArn,
-			Certificates: []*elbv2sdk.Certificate{
-				{
-					CertificateArn: awssdk.String(certARN),
-				},
-			},
-		}
-		m.logger.Info("adding certificate to listener",
-			"stackID", resLS.Stack().StackID(),
-			"resourceID", resLS.ID(),
-			"arn", awssdk.StringValue(sdkLS.Listener.ListenerArn),
-			"certificateARN", certARN)
-		if _, err := m.elbv2Client.AddListenerCertificatesWithContext(ctx, req); err != nil {
-			return err
-		}
-		m.logger.Info("added certificate to listener",
-			"stackID", resLS.Stack().StackID(),
-			"resourceID", resLS.ID(),
-			"arn", awssdk.StringValue(sdkLS.Listener.ListenerArn),
-			"certificateARN", certARN)
 	}
 
 	for _, certARN := range currentExtraCertARNs.Difference(desiredExtraCertARNs).List() {
@@ -218,6 +195,30 @@ func (m *defaultListenerManager) updateSDKListenerWithExtraCertificates(ctx cont
 			return err
 		}
 		m.logger.Info("removed certificate from listener",
+			"stackID", resLS.Stack().StackID(),
+			"resourceID", resLS.ID(),
+			"arn", awssdk.StringValue(sdkLS.Listener.ListenerArn),
+			"certificateARN", certARN)
+	}
+
+	for _, certARN := range desiredExtraCertARNs.Difference(currentExtraCertARNs).List() {
+		req := &elbv2sdk.AddListenerCertificatesInput{
+			ListenerArn: sdkLS.Listener.ListenerArn,
+			Certificates: []*elbv2sdk.Certificate{
+				{
+					CertificateArn: awssdk.String(certARN),
+				},
+			},
+		}
+		m.logger.Info("adding certificate to listener",
+			"stackID", resLS.Stack().StackID(),
+			"resourceID", resLS.ID(),
+			"arn", awssdk.StringValue(sdkLS.Listener.ListenerArn),
+			"certificateARN", certARN)
+		if _, err := m.elbv2Client.AddListenerCertificatesWithContext(ctx, req); err != nil {
+			return err
+		}
+		m.logger.Info("added certificate to listener",
 			"stackID", resLS.Stack().StackID(),
 			"resourceID", resLS.ID(),
 			"arn", awssdk.StringValue(sdkLS.Listener.ListenerArn),

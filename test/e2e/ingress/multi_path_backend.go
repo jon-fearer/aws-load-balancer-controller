@@ -3,10 +3,12 @@ package ingress
 import (
 	"context"
 	"fmt"
+	"sync"
+
 	"github.com/aws/aws-sdk-go/aws"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	networking "k8s.io/api/networking/v1beta1"
+	networking "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/algorithm"
@@ -14,7 +16,6 @@ import (
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/utils"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sync"
 )
 
 type PathConfig struct {
@@ -31,7 +32,7 @@ type BackendConfig struct {
 
 type MultiPathIngressConfig struct {
 	GroupName  string
-	GroupOrder int32
+	GroupOrder int64
 	PathCFGs   []PathConfig
 }
 
@@ -65,7 +66,7 @@ func (s *multiPathBackendStack) Deploy(ctx context.Context, f *framework.Framewo
 	if err := s.allocateNamespaces(ctx, f); err != nil {
 		return err
 	}
-	s.resStackByNSID, s.ingByIngIDByNSID = s.buildResourceStacks(s.namespacedResourcesCFGs, s.nsByNSID)
+	s.resStackByNSID, s.ingByIngIDByNSID = s.buildResourceStacks(s.namespacedResourcesCFGs, s.nsByNSID, f)
 	if err := s.deployResourceStacks(ctx, f); err != nil {
 		return err
 	}
@@ -192,21 +193,21 @@ func (s *multiPathBackendStack) cleanupResourceStacks(ctx context.Context, f *fr
 	return nil
 }
 
-func (s *multiPathBackendStack) buildResourceStacks(namespacedResourcesCFGs map[string]NamespacedResourcesConfig, nsByNSID map[string]*corev1.Namespace) (map[string]*resourceStack, map[string]map[string]*networking.Ingress) {
+func (s *multiPathBackendStack) buildResourceStacks(namespacedResourcesCFGs map[string]NamespacedResourcesConfig, nsByNSID map[string]*corev1.Namespace, f *framework.Framework) (map[string]*resourceStack, map[string]map[string]*networking.Ingress) {
 	resStackByNSID := make(map[string]*resourceStack, len(namespacedResourcesCFGs))
 	ingByIngIDByNSID := make(map[string]map[string]*networking.Ingress, len(namespacedResourcesCFGs))
 	for nsID, resCFG := range namespacedResourcesCFGs {
 		ns := nsByNSID[nsID]
-		resStack, ingByIngID := s.buildResourceStack(ns, resCFG)
+		resStack, ingByIngID := s.buildResourceStack(ns, resCFG, f)
 		resStackByNSID[nsID] = resStack
 		ingByIngIDByNSID[nsID] = ingByIngID
 	}
 	return resStackByNSID, ingByIngIDByNSID
 }
 
-func (s *multiPathBackendStack) buildResourceStack(ns *corev1.Namespace, resourcesCFG NamespacedResourcesConfig) (*resourceStack, map[string]*networking.Ingress) {
+func (s *multiPathBackendStack) buildResourceStack(ns *corev1.Namespace, resourcesCFG NamespacedResourcesConfig, f *framework.Framework) (*resourceStack, map[string]*networking.Ingress) {
 	dpByBackendID, svcByBackendID := s.buildBackendResources(ns, resourcesCFG.BackendCFGs)
-	ingByIngID := s.buildIngressResources(ns, resourcesCFG.IngCFGs, svcByBackendID)
+	ingByIngID := s.buildIngressResources(ns, resourcesCFG.IngCFGs, svcByBackendID, f)
 
 	dps := make([]*appsv1.Deployment, 0, len(dpByBackendID))
 	for _, dp := range dpByBackendID {
@@ -223,24 +224,28 @@ func (s *multiPathBackendStack) buildResourceStack(ns *corev1.Namespace, resourc
 	return NewResourceStack(dps, svcs, ings), ingByIngID
 }
 
-func (s *multiPathBackendStack) buildIngressResources(ns *corev1.Namespace, ingCFGs map[string]MultiPathIngressConfig, svcByBackendID map[string]*corev1.Service) map[string]*networking.Ingress {
+func (s *multiPathBackendStack) buildIngressResources(ns *corev1.Namespace, ingCFGs map[string]MultiPathIngressConfig, svcByBackendID map[string]*corev1.Service, f *framework.Framework) map[string]*networking.Ingress {
 	ingByIngID := make(map[string]*networking.Ingress, len(ingCFGs))
 	for ingID, ingCFG := range ingCFGs {
-		ing := s.buildIngressResource(ns, ingID, ingCFG, svcByBackendID)
+		ing := s.buildIngressResource(ns, ingID, ingCFG, svcByBackendID, f)
 		ingByIngID[ingID] = ing
 	}
 	return ingByIngID
 }
 
-func (s *multiPathBackendStack) buildIngressResource(ns *corev1.Namespace, ingID string, ingCFG MultiPathIngressConfig, svcByBackendID map[string]*corev1.Service) *networking.Ingress {
+func (s *multiPathBackendStack) buildIngressResource(ns *corev1.Namespace, ingID string, ingCFG MultiPathIngressConfig, svcByBackendID map[string]*corev1.Service, f *framework.Framework) *networking.Ingress {
+	annotations := map[string]string{
+		"kubernetes.io/ingress.class":      "alb",
+		"alb.ingress.kubernetes.io/scheme": "internet-facing",
+	}
+	if f.Options.IPFamily == "IPv6" {
+		annotations["alb.ingress.kubernetes.io/ip-address-type"] = "dualstack"
+	}
 	ing := &networking.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns.Name,
-			Name:      ingID,
-			Annotations: map[string]string{
-				"kubernetes.io/ingress.class":      "alb",
-				"alb.ingress.kubernetes.io/scheme": "internet-facing",
-			},
+			Namespace:   ns.Name,
+			Name:        ingID,
+			Annotations: annotations,
 		},
 		Spec: networking.IngressSpec{
 			Rules: []networking.IngressRule{
@@ -254,11 +259,17 @@ func (s *multiPathBackendStack) buildIngressResource(ns *corev1.Namespace, ingID
 	}
 	for _, pathCFG := range ingCFG.PathCFGs {
 		backendSVC := svcByBackendID[pathCFG.BackendID]
+		exact := networking.PathTypeExact
 		ing.Spec.Rules[0].HTTP.Paths = append(ing.Spec.Rules[0].HTTP.Paths, networking.HTTPIngressPath{
-			Path: pathCFG.Path,
+			Path:     pathCFG.Path,
+			PathType: &exact,
 			Backend: networking.IngressBackend{
-				ServiceName: backendSVC.Name,
-				ServicePort: intstr.FromInt(80),
+				Service: &networking.IngressServiceBackend{
+					Name: backendSVC.Name,
+					Port: networking.ServiceBackendPort{
+						Number: 80,
+					},
+				},
 			},
 		})
 	}
@@ -305,7 +316,7 @@ func (s *multiPathBackendStack) buildBackendResource(ns *corev1.Namespace, backe
 					Containers: []corev1.Container{
 						{
 							Name:  "app",
-							Image: "970805265562.dkr.ecr.us-west-2.amazonaws.com/colorteller:latest",
+							Image: utils.ColortellerImage,
 							Ports: []corev1.ContainerPort{
 								{
 									ContainerPort: 8080,

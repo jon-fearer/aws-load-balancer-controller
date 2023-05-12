@@ -3,14 +3,15 @@ package ingress
 import (
 	"context"
 	"fmt"
-	. "github.com/onsi/ginkgo"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/k8s"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/http"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/utils"
-	"time"
 )
 
 var _ = Describe("test ingresses with multiple path and backends", func() {
@@ -23,7 +24,8 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 
 		if tf.Options.ControllerImage != "" {
 			By(fmt.Sprintf("ensure cluster installed with controller: %s", tf.Options.ControllerImage), func() {
-				tf.CTRLInstallationManager.UpgradeController(tf.Options.ControllerImage)
+				err := tf.CTRLInstallationManager.UpgradeController(tf.Options.ControllerImage, false)
+				Expect(err).NotTo(HaveOccurred())
 				time.Sleep(60 * time.Second)
 			})
 		}
@@ -36,6 +38,19 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 
 	Context("with podReadinessGate enabled", func() {
 		It("standalone Ingress should behaves correctly", func() {
+			// TODO: Once instance mode is supported in IPv6, the backendConfigA can be removed and reverted
+			backendConfigA := BackendConfig{
+				Replicas:   3,
+				TargetType: elbv2model.TargetTypeInstance,
+				HTTPBody:   "backend-a",
+			}
+			if tf.Options.IPFamily == "IPv6" {
+				backendConfigA = BackendConfig{
+					Replicas:   3,
+					TargetType: elbv2model.TargetTypeIP,
+					HTTPBody:   "backend-a",
+				}
+			}
 			stack := NewMultiPathBackendStack(map[string]NamespacedResourcesConfig{
 				"ns-1": {
 					IngCFGs: map[string]MultiPathIngressConfig{
@@ -53,11 +68,7 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 						},
 					},
 					BackendCFGs: map[string]BackendConfig{
-						"backend-a": {
-							Replicas:   3,
-							TargetType: elbv2model.TargetTypeInstance,
-							HTTPBody:   "backend-a",
-						},
+						"backend-a": backendConfigA,
 						"backend-b": {
 							Replicas:   3,
 							TargetType: elbv2model.TargetTypeIP,
@@ -97,6 +108,29 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 		})
 
 		It("IngressGroup across namespaces should behaves correctly", func() {
+			// TODO: Once instance mode is supported in IPv6, the backendConfigA and backendConfigD can be removed and reverted
+			backendConfigA := BackendConfig{
+				Replicas:   3,
+				TargetType: elbv2model.TargetTypeInstance,
+				HTTPBody:   "backend-a",
+			}
+			backendConfigD := BackendConfig{
+				Replicas:   3,
+				TargetType: elbv2model.TargetTypeInstance,
+				HTTPBody:   "backend-d",
+			}
+			if tf.Options.IPFamily == "IPv6" {
+				backendConfigA = BackendConfig{
+					Replicas:   3,
+					TargetType: elbv2model.TargetTypeIP,
+					HTTPBody:   "backend-a",
+				}
+				backendConfigD = BackendConfig{
+					Replicas:   3,
+					TargetType: elbv2model.TargetTypeIP,
+					HTTPBody:   "backend-d",
+				}
+			}
 			groupName := fmt.Sprintf("e2e-group.%v", utils.RandomDNS1123Label(8))
 			stack := NewMultiPathBackendStack(map[string]NamespacedResourcesConfig{
 				"ns-1": {
@@ -125,11 +159,7 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 						},
 					},
 					BackendCFGs: map[string]BackendConfig{
-						"backend-a": {
-							Replicas:   3,
-							TargetType: elbv2model.TargetTypeInstance,
-							HTTPBody:   "backend-a",
-						},
+						"backend-a": backendConfigA,
 						"backend-b": {
 							Replicas:   3,
 							TargetType: elbv2model.TargetTypeIP,
@@ -159,11 +189,7 @@ var _ = Describe("test ingresses with multiple path and backends", func() {
 						},
 					},
 					BackendCFGs: map[string]BackendConfig{
-						"backend-d": {
-							Replicas:   3,
-							TargetType: elbv2model.TargetTypeInstance,
-							HTTPBody:   "backend-d",
-						},
+						"backend-d": backendConfigD,
 						"backend-e": {
 							Replicas:   3,
 							TargetType: elbv2model.TargetTypeIP,

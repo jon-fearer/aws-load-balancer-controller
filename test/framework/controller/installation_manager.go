@@ -1,26 +1,28 @@
 package controller
 
 import (
+	"strings"
+
 	"github.com/go-logr/logr"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"sigs.k8s.io/aws-load-balancer-controller/test/framework/helm"
-	"strings"
 )
 
 // InstallationManager is responsible for manage controller installation in cluster.
 type InstallationManager interface {
 	ResetController() error
-	UpgradeController(controllerImage string) error
+	UpgradeController(controllerImage string, enableEndPointSlices bool) error
 }
 
 // NewDefaultInstallationManager constructs new defaultInstallationManager.
-func NewDefaultInstallationManager(helmReleaseManager helm.ReleaseManager, clusterName string, region string, vpcID string, logger logr.Logger) *defaultInstallationManager {
+func NewDefaultInstallationManager(helmReleaseManager helm.ReleaseManager, clusterName string, region string, vpcID string, helmChart string, logger logr.Logger) *defaultInstallationManager {
 	return &defaultInstallationManager{
 		helmReleaseManager: helmReleaseManager,
 		clusterName:        clusterName,
 		region:             region,
 		vpcID:              vpcID,
+		helmChart:          helmChart,
 
 		namespace:        "kube-system",
 		controllerSAName: "aws-load-balancer-controller",
@@ -36,6 +38,7 @@ type defaultInstallationManager struct {
 	clusterName        string
 	region             string
 	vpcID              string
+	helmChart          string
 
 	namespace        string
 	controllerSAName string
@@ -44,13 +47,13 @@ type defaultInstallationManager struct {
 
 func (m *defaultInstallationManager) ResetController() error {
 	vals := m.computeDefaultHelmVals()
-	_, err := m.helmReleaseManager.InstallOrUpgradeRelease(EKSHelmChartsRepo, AWSLoadBalancerControllerHelmChart,
+	_, err := m.helmReleaseManager.InstallOrUpgradeRelease(m.helmChart,
 		m.namespace, AWSLoadBalancerControllerHelmRelease, vals,
 		helm.WithTimeout(AWSLoadBalancerControllerInstallationTimeout))
 	return err
 }
 
-func (m *defaultInstallationManager) UpgradeController(controllerImage string) error {
+func (m *defaultInstallationManager) UpgradeController(controllerImage string, enableEndPointSlices bool) error {
 	imageRepo, imageTag, err := splitImageRepoAndTag(controllerImage)
 	if err != nil {
 		return err
@@ -63,7 +66,10 @@ func (m *defaultInstallationManager) UpgradeController(controllerImage string) e
 	vals["podLabels"] = map[string]string{
 		"revision": string(uuid.NewUUID()),
 	}
-	_, err = m.helmReleaseManager.InstallOrUpgradeRelease(EKSHelmChartsRepo, AWSLoadBalancerControllerHelmChart,
+	if enableEndPointSlices {
+		vals["enableEndpointSlices"] = true
+	}
+	_, err = m.helmReleaseManager.InstallOrUpgradeRelease(m.helmChart,
 		m.namespace, AWSLoadBalancerControllerHelmRelease, vals,
 		helm.WithTimeout(AWSLoadBalancerControllerInstallationTimeout))
 	return err
