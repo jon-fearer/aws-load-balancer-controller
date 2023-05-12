@@ -126,7 +126,7 @@ func (m *defaultTargetGroupBindingManager) Delete(ctx context.Context, tgb *elbv
 		return err
 	}
 	if err := m.waitUntilTargetGroupBindingDeleted(ctx, tgb); err != nil {
-		return errors.Wrap(err, "failed to wait targetGroupBinding deletion")
+		return errors.Wrap(err, "failed to wait for targetGroupBinding deletion")
 	}
 	m.logger.Info("deleted targetGroupBinding",
 		"targetGroupBinding", k8s.NamespacedName(tgb))
@@ -176,6 +176,7 @@ func buildK8sTargetGroupBindingSpec(ctx context.Context, resTGB *elbv2model.Targ
 		TargetGroupARN: tgARN,
 		TargetType:     resTGB.Spec.Template.Spec.TargetType,
 		ServiceRef:     resTGB.Spec.Template.Spec.ServiceRef,
+		IngressRef:     resTGB.Spec.Template.Spec.IngressRef,
 	}
 
 	if resTGB.Spec.Template.Spec.Networking != nil {

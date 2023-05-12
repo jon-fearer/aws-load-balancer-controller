@@ -130,7 +130,7 @@ eksctl::delete_cluster() {
     return 1
   fi
 
-  echo "ueleted cluster ${cluster_name}"
+  echo "deleted cluster ${cluster_name}"
   return 0
 }
 
